@@ -866,7 +866,7 @@ export default function Settings() {
                 <WelcomeMediaUpload
                   mediaUrls={welcomeMediaUrls}
                   onChange={handleMediaUrlsChange}
-                  maxFiles={5}
+                  maxFiles={7}
                 />
 
                 {/* Sending Order */}

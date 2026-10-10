@@ -12,7 +12,7 @@ interface WelcomeMediaUploadProps {
   maxFiles?: number;
 }
 
-export default function WelcomeMediaUpload({ mediaUrls, onChange, maxFiles = 5 }: WelcomeMediaUploadProps) {
+export default function WelcomeMediaUpload({ mediaUrls, onChange, maxFiles = 7 }: WelcomeMediaUploadProps) {
   const { user } = useAuth();
   const { toast } = useToast();
   const [uploading, setUploading] = useState(false);
