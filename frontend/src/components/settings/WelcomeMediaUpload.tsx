@@ -38,8 +38,8 @@ export default function WelcomeMediaUpload({ mediaUrls, onChange, maxFiles = 7 }
           toast({ title: "Invalid file type", description: `${file.name} is not an image, video, audio, or PDF file.`, variant: "destructive" });
           continue;
         }
-        if (file.size > 10 * 1024 * 1024) {
-          toast({ title: "File too large", description: `${file.name} exceeds 10MB limit.`, variant: "destructive" });
+        if (file.size > 20 * 1024 * 1024) {
+          toast({ title: "File too large", description: `${file.name} exceeds 20MB limit.`, variant: "destructive" });
           continue;
         }
 
