@@ -127,6 +127,10 @@ export default function Settings() {
         switch (setting.key) {
           case "welcome_message": {
             const wVal = setting.value as any;
+            setWelcomeMediaUrl(wVal?.media_url || "");
+            const urls: string[] = wVal?.media_urls || [];
+            setWelcomeMediaUrls(urls);
+            setBypassTriggers(wVal?.bypass_triggers || []);
             // Load sequence or build default
             let loadedSequence: WelcomeSequenceItem[] = [];
             if (wVal?.welcome_sequence && Array.isArray(wVal.welcome_sequence)) {
