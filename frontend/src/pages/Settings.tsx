@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Save, MessageSquare, CreditCard, Copy, Check, Smartphone, RefreshCw, Wifi, WifiOff, Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Clock, Lock } from "lucide-react";
+import { Loader2, Save, MessageSquare, CreditCard, Copy, Check, Smartphone, RefreshCw, Wifi, WifiOff, Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Clock, Lock, X } from "lucide-react";
 import WelcomeMediaUpload from "@/components/settings/WelcomeMediaUpload";
 import StaffManager from "@/components/settings/StaffManager";
 import { useStaffAccess } from "@/hooks/useStaffAccess";
@@ -45,23 +45,19 @@ export default function Settings() {
   const { user } = useAuth();
   const { isGrowth } = useEffectivePlan();
 
-  // Welcome Message
-  const [welcomeMessage, setWelcomeMessage] = useState("");
   const [welcomeMediaUrl, setWelcomeMediaUrl] = useState("");
   const [welcomeMediaUrls, setWelcomeMediaUrls] = useState<string[]>([]);
   const [bypassTriggers, setBypassTriggers] = useState<string[]>([]);
   const [newBypassTrigger, setNewBypassTrigger] = useState("");
   // Welcome sequence: ordered list of items to send
-  type WelcomeSequenceItem = { type: "text" } | { type: "media"; url: string };
+  type WelcomeSequenceItem = { type: "text"; text?: string; id?: string } | { type: "media"; url: string };
   const [welcomeSequence, setWelcomeSequence] = useState<WelcomeSequenceItem[]>([]);
 
   // Use refs to always have latest values for save
-  const welcomeMessageRef = useRef(welcomeMessage);
   const welcomeMediaUrlRef = useRef(welcomeMediaUrl);
   const welcomeMediaUrlsRef = useRef(welcomeMediaUrls);
   const bypassTriggersRef = useRef(bypassTriggers);
   const welcomeSequenceRef = useRef(welcomeSequence);
-  welcomeMessageRef.current = welcomeMessage;
   welcomeMediaUrlRef.current = welcomeMediaUrl;
   welcomeMediaUrlsRef.current = welcomeMediaUrls;
   bypassTriggersRef.current = bypassTriggers;
@@ -131,21 +127,21 @@ export default function Settings() {
         switch (setting.key) {
           case "welcome_message": {
             const wVal = setting.value as any;
-            setWelcomeMessage(wVal?.text || "");
-            setWelcomeMediaUrl(wVal?.media_url || "");
-            const urls: string[] = wVal?.media_urls || [];
-            setWelcomeMediaUrls(urls);
-            setBypassTriggers(wVal?.bypass_triggers || []);
             // Load sequence or build default
+            let loadedSequence: WelcomeSequenceItem[] = [];
             if (wVal?.welcome_sequence && Array.isArray(wVal.welcome_sequence)) {
-              setWelcomeSequence(wVal.welcome_sequence);
+              loadedSequence = wVal.welcome_sequence.map((seqItem: any) => {
+                if (seqItem.type === "text") {
+                  return { ...seqItem, text: seqItem.text ?? wVal?.text ?? "", id: seqItem.id || crypto.randomUUID() };
+                }
+                return seqItem;
+              });
             } else {
               // Build default sequence: text first, then media
-              const defaultSeq: WelcomeSequenceItem[] = [];
-              if (wVal?.text?.trim()) defaultSeq.push({ type: "text" });
-              urls.forEach((u: string) => defaultSeq.push({ type: "media", url: u }));
-              setWelcomeSequence(defaultSeq);
+              if (wVal?.text?.trim()) loadedSequence.push({ type: "text", text: wVal.text, id: crypto.randomUUID() });
+              urls.forEach((u: string) => loadedSequence.push({ type: "media", url: u }));
             }
+            setWelcomeSequence(loadedSequence);
             break;
           }
           case "payment_info": {
@@ -460,8 +456,9 @@ export default function Settings() {
   };
 
   const handleSaveWelcome = () => {
+    const firstText = welcomeSequenceRef.current.find(i => i.type === "text") as any;
     saveSettings("welcome_message", { 
-      text: welcomeMessageRef.current, 
+      text: firstText?.text || "", 
       media_url: welcomeMediaUrlRef.current || null,
       media_urls: welcomeMediaUrlsRef.current,
       bypass_triggers: bypassTriggersRef.current,
@@ -484,8 +481,9 @@ export default function Settings() {
 
       // Auto-save when media changes
       setTimeout(() => {
+        const firstText = welcomeSequenceRef.current.find(i => i.type === "text") as any;
         saveSettings("welcome_message", { 
-          text: welcomeMessageRef.current, 
+          text: firstText?.text || "", 
           media_url: welcomeMediaUrlRef.current || null,
           media_urls: newUrls,
           bypass_triggers: bypassTriggersRef.current,
@@ -509,8 +507,9 @@ export default function Settings() {
       
       // Auto-save when order changes
       setTimeout(() => {
+        const firstText = welcomeSequenceRef.current.find(i => i.type === "text") as any;
         saveSettings("welcome_message", { 
-          text: welcomeMessageRef.current, 
+          text: firstText?.text || "", 
           media_url: welcomeMediaUrlRef.current || null,
           media_urls: welcomeMediaUrlsRef.current,
           bypass_triggers: bypassTriggersRef.current,
@@ -847,21 +846,56 @@ export default function Settings() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="welcome">Message</Label>
-                  <Textarea
-                    id="welcome"
-                    value={welcomeMessage}
-                    onChange={(e) => {
-                      setWelcomeMessage(e.target.value);
-                      // Ensure text item exists in sequence
-                      if (e.target.value.trim() && !welcomeSequence.some(i => i.type === "text")) {
-                        setWelcomeSequence(prev => [{ type: "text" }, ...prev]);
-                      }
-                    }}
-                    placeholder="Welcome! How can I help you today?"
-                    rows={4}
-                  />
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>Messages</Label>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Add up to 3 text messages to your welcome sequence.
+                      </p>
+                    </div>
+                    {welcomeSequence.filter(i => i.type === "text").length < 3 && (
+                      <Button 
+                        type="button" 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setWelcomeSequence(prev => [...prev, { type: "text", text: "", id: crypto.randomUUID() }])}
+                      >
+                        <Plus className="h-4 w-4 mr-2" /> Add Message
+                      </Button>
+                    )}
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {welcomeSequence.filter(i => i.type === "text").map((item, index) => (
+                      <div key={(item as any).id || index} className="space-y-2 relative border p-3 rounded-md bg-card">
+                        <Label>Message {index + 1}</Label>
+                        <Textarea
+                          value={(item as any).text || ""}
+                          onChange={(e) => {
+                            setWelcomeSequence(prev => prev.map(seqItem => 
+                              seqItem === item ? { ...seqItem, text: e.target.value } : seqItem
+                            ));
+                          }}
+                          placeholder="Welcome! How can I help you today?"
+                          rows={3}
+                        />
+                        {welcomeSequence.filter(i => i.type === "text").length > 1 && (
+                          <Button 
+                            type="button" 
+                            variant="ghost" 
+                            size="icon" 
+                            className="absolute top-2 right-2 h-7 w-7 text-muted-foreground hover:text-destructive"
+                            onClick={() => {
+                              setWelcomeSequence(prev => prev.filter(seqItem => seqItem !== item));
+                            }}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 <WelcomeMediaUpload
                   mediaUrls={welcomeMediaUrls}
@@ -890,7 +924,7 @@ export default function Settings() {
                         
                         return (
                           <div
-                            key={isText ? "text" : mediaUrl}
+                            key={(item as any).id || mediaUrl}
                             className="flex items-center gap-2 p-2 rounded-md border bg-card"
                           >
                             <span className="text-xs font-mono text-muted-foreground w-5 text-center">{index + 1}</span>

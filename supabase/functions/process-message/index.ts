@@ -438,14 +438,20 @@ async function handleWelcomeMessage(
     welcomeMediaUrls.unshift(singleMedia);
   }
 
-  const welcomeSequence: Array<{ type: string; url?: string }> = welcomeSettings?.value?.welcome_sequence || [];
+  const welcomeSequence: Array<{ type: string; url?: string; text?: string }> = welcomeSettings?.value?.welcome_sequence || [];
 
   mark("send_start");
+  let sentTexts: string[] = [];
+
   if (welcomeSequence.length > 0) {
     for (const seqItem of welcomeSequence) {
-      if (seqItem.type === "text" && welcomeText.trim()) {
-        console.log(`[${corrId}] Sending welcome text (sequence)`);
-        await sendWhatsApp(supabaseUrl, supabaseServiceKey, phoneNumber, welcomeText, null, sessionApiKey);
+      if (seqItem.type === "text") {
+        const textToSend = seqItem.text || welcomeText;
+        if (textToSend.trim()) {
+          console.log(`[${corrId}] Sending welcome text (sequence)`);
+          await sendWhatsApp(supabaseUrl, supabaseServiceKey, phoneNumber, textToSend, null, sessionApiKey);
+          sentTexts.push(textToSend.trim());
+        }
       } else if (seqItem.type === "media" && seqItem.url) {
         console.log(`[${corrId}] Sending welcome media (sequence): ${seqItem.url.substring(0, 80)}`);
         await sendWhatsAppMedia(supabaseUrl, supabaseServiceKey, phoneNumber, seqItem.url, sessionApiKey);
@@ -454,6 +460,7 @@ async function handleWelcomeMessage(
   } else {
     if (welcomeText.trim()) {
       await sendWhatsApp(supabaseUrl, supabaseServiceKey, phoneNumber, welcomeText, null, sessionApiKey);
+      sentTexts.push(welcomeText.trim());
     }
     for (const mediaUrl of welcomeMediaUrls) {
       await sendWhatsAppMedia(supabaseUrl, supabaseServiceKey, phoneNumber, mediaUrl, sessionApiKey);
@@ -461,16 +468,17 @@ async function handleWelcomeMessage(
   }
   mark("send_end");
 
-  if (welcomeText.trim()) {
-    await supabase.from("conversations").insert({
+  if (sentTexts.length > 0) {
+    const historyInserts = sentTexts.map(text => ({
       phone_number: phoneNumber,
-      message: welcomeText,
+      message: text,
       direction: "outbound",
       message_type: "text",
       metadata: { type: "welcome_message", correlationId: corrId },
       user_id: userId,
-    });
-    console.log(`[${corrId}] Stored welcome message in conversation history`);
+    }));
+    await supabase.from("conversations").insert(historyInserts);
+    console.log(`[${corrId}] Stored ${sentTexts.length} welcome message(s) in conversation history`);
   }
 
   console.log(`[${corrId}] Welcome message sent, skipping AI for first message`);
