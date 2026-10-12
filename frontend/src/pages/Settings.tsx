@@ -1144,7 +1144,8 @@ export default function Settings() {
                       <Input
                         id="inactivity-hours"
                         type="number"
-                        min={1}
+                        step="any"
+                        min={0.1}
                         value={inactivityFollowupHours}
                         onChange={(e) => setInactivityFollowupHours(e.target.value)}
                         className="max-w-[160px]"
