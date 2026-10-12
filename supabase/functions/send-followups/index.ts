@@ -6,9 +6,51 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+const wahaBase = (Deno.env.get("WAHA_BASE_URL") || "").replace(/\/+$/, "");
+const wahaKey = Deno.env.get("WAHA_API_KEY") || "";
+
 /** digits-only contact key */
 function normalizeKey(raw: string): string {
   return String(raw || "").split("@")[0].replace(/\D/g, "");
+}
+
+/** Robust PostgreSQL / ISO-8601 timestamp parser that handles timezone offsets like +00 */
+function parsePgTimestamp(raw: string | number | null | undefined): number {
+  if (!raw) return NaN;
+  let s = String(raw).trim();
+  if (/^\d+$/.test(s)) return Number(s);
+  s = s.replace(" ", "T");
+  // Normalize "+00" or "+05" timezone offsets to "+00:00" or "+05:00"
+  s = s.replace(/([+-]\d{2})$/, "$1:00");
+  const t = new Date(s).getTime();
+  if (!isNaN(t)) return t;
+  const fallback = Date.parse(String(raw));
+  return isNaN(fallback) ? NaN : fallback;
+}
+
+/** Quickly probe WAHA to see if session is WORKING before processing contacts */
+async function isSessionWorking(sessionName: string): Promise<boolean> {
+  if (!wahaBase || !wahaKey || !sessionName) return true;
+  try {
+    const res = await fetch(`${wahaBase}/api/sessions/${sessionName}`, {
+      headers: { "X-Api-Key": wahaKey },
+      signal: AbortSignal.timeout(3500),
+    });
+    if (!res.ok) {
+      console.warn(`[send-followups] Session ${sessionName} status probe returned HTTP ${res.status}`);
+      return false;
+    }
+    const data = await res.json();
+    const status = String(data?.status || "").toUpperCase();
+    const isWorking = status === "WORKING";
+    if (!isWorking) {
+      console.warn(`[send-followups] Session ${sessionName} is not WORKING (current status: ${data?.status})`);
+    }
+    return isWorking;
+  } catch (e) {
+    console.warn(`[send-followups] Session probe error for ${sessionName}:`, (e as Error).message);
+    return true; // fail-open to let send-whatsapp try if probe had a transient network glitch
+  }
 }
 
 Deno.serve(async (req) => {
@@ -37,9 +79,9 @@ Deno.serve(async (req) => {
 
       const userId = row.user_id as string;
       const cfgEnabledAt = cfg.enabled_at;
-      const enabledAtTime = cfgEnabledAt
-        ? new Date(String(cfgEnabledAt).replace(" ", "T")).getTime()
-        : (row.updated_at ? new Date(String(row.updated_at).replace(" ", "T")).getTime() : 0);
+      const rawEnabledAt = cfgEnabledAt || row.updated_at;
+      const enabledAtTime = rawEnabledAt ? parsePgTimestamp(rawEnabledAt) : 0;
+      const safeEnabledAtTime = isNaN(enabledAtTime) ? 0 : enabledAtTime;
 
       // 2. Growth plan only
       const { data: profile } = await supabase
@@ -59,6 +101,13 @@ Deno.serve(async (req) => {
         .maybeSingle();
       const sessionApiKey = session?.session_api_key;
       if (!sessionApiKey) continue;
+
+      // 4. Probe session health before doing heavy conversation aggregation
+      const sessionReady = await isSessionWorking(sessionApiKey);
+      if (!sessionReady) {
+        console.warn(`[send-followups] Skipping user ${userId} because session ${sessionApiKey} is not working.`);
+        continue;
+      }
 
       const cutoffTime = Date.now() - hours * 3600 * 1000;
       // look back over a bounded window so we never spam very old contacts
@@ -106,21 +155,29 @@ Deno.serve(async (req) => {
       for (const [key, entry] of perContact) {
         if (!entry.lastInbound) continue;
         if (entry.followupAfter) continue; // already followed up since their last message
-        const lastInboundTime = new Date(entry.lastInbound.replace(" ", "T")).getTime();
+        const lastInboundTime = parsePgTimestamp(entry.lastInbound);
         if (isNaN(lastInboundTime) || lastInboundTime > cutoffTime) continue; // not idle long enough
-        if (lastInboundTime < enabledAtTime) continue; // ignore backlog from before the feature was enabled
+        if (safeEnabledAtTime > 0 && lastInboundTime < safeEnabledAtTime) continue; // ignore backlog from before the feature was enabled
         eligibleEntries.push({ key, entry });
       }
 
       if (!eligibleEntries.length) continue;
 
       // Check if any eligible contacts have placed an order
-      const eligiblePhones = eligibleEntries.map(e => e.entry.phone);
+      const allPhoneVariants = new Set<string>();
+      for (const { key, entry } of eligibleEntries) {
+        allPhoneVariants.add(entry.phone);
+        allPhoneVariants.add(key);
+        if (key.startsWith("94") && key.length === 11) {
+          allPhoneVariants.add("0" + key.slice(2));
+        }
+      }
+      const phoneList = Array.from(allPhoneVariants);
       const orderKeys = new Set<string>();
 
       // Fetch in chunks of 100 to avoid huge URL strings
-      for (let i = 0; i < eligiblePhones.length; i += 100) {
-        const chunk = eligiblePhones.slice(i, i + 100);
+      for (let i = 0; i < phoneList.length; i += 100) {
+        const chunk = phoneList.slice(i, i + 100);
         const { data: oData1 } = await supabase.from("orders").select("customer_phone").eq("user_id", userId).in("customer_phone", chunk);
         const { data: oData2 } = await supabase.from("orders").select("whatsapp_phone").eq("user_id", userId).in("whatsapp_phone", chunk);
 
@@ -136,7 +193,9 @@ Deno.serve(async (req) => {
           .from("chat_takeovers")
           .select("is_taken_over")
           .eq("user_id", userId)
-          .eq("phone_number", entry.phone)
+          .in("phone_number", [entry.phone, key])
+          .eq("is_taken_over", true)
+          .limit(1)
           .maybeSingle();
         if (takeover?.is_taken_over) continue;
 
@@ -148,9 +207,22 @@ Deno.serve(async (req) => {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({ to: entry.phone, message: cfg.text.trim(), sessionApiKey }),
+            signal: AbortSignal.timeout(12000),
           });
           if (!res.ok) {
-            console.error("follow-up send failed", entry.phone, (await res.text()).substring(0, 200));
+            const errText = await res.text();
+            console.error(`follow-up send failed for ${entry.phone}:`, errText.substring(0, 200));
+            const lowerErr = errText.toLowerCase();
+            // Circuit-breaker: If session is disconnected/failed, break immediately
+            if (
+              res.status === 422 ||
+              res.status === 401 ||
+              lowerErr.includes("session") ||
+              lowerErr.includes("not as expected")
+            ) {
+              console.warn(`[send-followups] Session issue for user ${userId} (${sessionApiKey}). Skipping remaining contacts.`);
+              break;
+            }
             continue;
           }
           await supabase.from("conversations").insert({
@@ -163,7 +235,12 @@ Deno.serve(async (req) => {
           });
           summary.push({ userId, phone: entry.phone });
         } catch (e) {
-          console.error("follow-up error", entry.phone, (e as Error).message);
+          console.error(`follow-up error for ${entry.phone}:`, (e as Error).message);
+          const msg = (e as Error).message?.toLowerCase() || "";
+          if (msg.includes("timed out") || msg.includes("aborted")) {
+            console.warn(`[send-followups] Request timed out for session ${sessionApiKey}. Skipping remaining contacts for user ${userId}.`);
+            break;
+          }
         }
       }
     }
