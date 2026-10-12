@@ -109,9 +109,19 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      const cutoffTime = Date.now() - hours * 3600 * 1000;
-      // look back over a bounded window so we never spam very old contacts
-      const windowStart = new Date(Date.now() - (hours * 3600 * 1000 + 14 * 24 * 3600 * 1000)).toISOString();
+      // 1. Calculate active inactivity window with an expiry grace buffer
+      // Customers who stopped talking between [now - (hours + graceHours)] and [now - hours] are eligible.
+      // Anyone older than (hours + graceHours) has EXPIRED their inactivity window (e.g. chats from yesterday or days ago).
+      // This strictly prevents backlog bursts and ensures stale customers are NEVER messaged.
+      const graceHours = Math.min(Math.max(hours * 0.5, 1), 2);
+      const maxIdleCutoff = Date.now() - hours * 3600 * 1000; // customer must have been idle at least `hours`
+      const minIdleCutoff = Date.now() - (hours + graceHours) * 3600 * 1000; // customer cannot have been idle longer than `hours + graceHours`
+
+      // Bound query strictly to the active window (or enabledAtTime, whichever is newer)
+      const effectiveWindowStartMs = safeEnabledAtTime > 0
+        ? Math.max(minIdleCutoff, safeEnabledAtTime)
+        : minIdleCutoff;
+      const windowStart = new Date(effectiveWindowStartMs).toISOString();
 
       const { data: convs } = await supabase
         .from("conversations")
@@ -156,7 +166,9 @@ Deno.serve(async (req) => {
         if (!entry.lastInbound) continue;
         if (entry.followupAfter) continue; // already followed up since their last message
         const lastInboundTime = parsePgTimestamp(entry.lastInbound);
-        if (isNaN(lastInboundTime) || lastInboundTime > cutoffTime) continue; // not idle long enough
+        if (isNaN(lastInboundTime)) continue;
+        if (lastInboundTime > maxIdleCutoff) continue; // not idle long enough yet
+        if (lastInboundTime < minIdleCutoff) continue; // inactivity window expired (stale chat)
         if (safeEnabledAtTime > 0 && lastInboundTime < safeEnabledAtTime) continue; // ignore backlog from before the feature was enabled
         eligibleEntries.push({ key, entry });
       }
@@ -185,7 +197,16 @@ Deno.serve(async (req) => {
         for (const o of oData2 || []) if (o.whatsapp_phone) orderKeys.add(normalizeKey(o.whatsapp_phone));
       }
 
+      // Maximum follow-up messages dispatched per user per cron execution
+      const MAX_PER_RUN = 5;
+      let sentForUser = 0;
+
       for (const { key, entry } of eligibleEntries) {
+        if (sentForUser >= MAX_PER_RUN) {
+          console.log(`[send-followups] User ${userId} reached safety cap of ${MAX_PER_RUN} follow-ups in this run.`);
+          break;
+        }
+
         if (orderKeys.has(key)) continue; // customer already ordered — never send
 
         // Skip if the chat has been taken over by a human
@@ -198,6 +219,24 @@ Deno.serve(async (req) => {
           .limit(1)
           .maybeSingle();
         if (takeover?.is_taken_over) continue;
+
+        // Verify this contact did NOT have any conversation prior to the feature being enabled
+        // (prevents sending to past customers whose chat started before the toggle was turned on)
+        if (safeEnabledAtTime > 0) {
+          const { data: pastChat } = await supabase
+            .from("conversations")
+            .select("id")
+            .eq("user_id", userId)
+            .eq("phone_number", entry.phone)
+            .lt("created_at", new Date(safeEnabledAtTime).toISOString())
+            .limit(1)
+            .maybeSingle();
+
+          if (pastChat) {
+            console.log(`[send-followups] Skipping ${entry.phone}: conversation originated before feature was enabled.`);
+            continue;
+          }
+        }
 
         try {
           const res = await fetch(`${supabaseUrl}/functions/v1/send-whatsapp`, {
@@ -234,6 +273,10 @@ Deno.serve(async (req) => {
             metadata: { type: "inactivity_followup" },
           });
           summary.push({ userId, phone: entry.phone });
+          sentForUser++;
+
+          // Pacing delay between WhatsApp dispatches to maintain healthy session behavior
+          await new Promise((r) => setTimeout(r, 1500));
         } catch (e) {
           console.error(`follow-up error for ${entry.phone}:`, (e as Error).message);
           const msg = (e as Error).message?.toLowerCase() || "";
