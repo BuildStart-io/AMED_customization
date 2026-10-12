@@ -85,6 +85,7 @@ export default function Settings() {
   const [inactivityFollowupEnabled, setInactivityFollowupEnabled] = useState(false);
   const [inactivityFollowupMessage, setInactivityFollowupMessage] = useState("");
   const [inactivityFollowupHours, setInactivityFollowupHours] = useState<string>("24");
+  const [inactivityFollowupEnabledAt, setInactivityFollowupEnabledAt] = useState<string | null>(null);
 
   // WhatsApp Connection
   const [sessions, setSessions] = useState<WsenderSession[]>([]);
@@ -185,6 +186,7 @@ export default function Settings() {
             setInactivityFollowupMessage(iVal?.text || "");
             setInactivityFollowupEnabled(iVal?.enabled ?? false);
             setInactivityFollowupHours(String(iVal?.hours ?? 24));
+            setInactivityFollowupEnabledAt(iVal?.enabled_at || null);
             break;
           }
         }
@@ -560,7 +562,14 @@ export default function Settings() {
   };
 
   const handleSaveNotifications = () => {
-    saveSettings("order_notifications", { phone: notificationPhone });
+    let cleanPhone = notificationPhone.replace(/\D/g, "");
+    if (cleanPhone.startsWith("0") && cleanPhone.length === 10) {
+      cleanPhone = "94" + cleanPhone.substring(1);
+    } else if (cleanPhone.length === 9) {
+      cleanPhone = "94" + cleanPhone;
+    }
+    setNotificationPhone(cleanPhone);
+    saveSettings("order_notifications", { phone: cleanPhone });
   };
 
   const handleSaveOrderFollowup = () => {
@@ -573,10 +582,20 @@ export default function Settings() {
       toast({ title: "Enter a valid time gap in hours", variant: "destructive" });
       return;
     }
+    let enabledAt = inactivityFollowupEnabledAt;
+    if (inactivityFollowupEnabled && !enabledAt) {
+      enabledAt = new Date().toISOString();
+      setInactivityFollowupEnabledAt(enabledAt);
+    } else if (!inactivityFollowupEnabled) {
+      enabledAt = null;
+      setInactivityFollowupEnabledAt(null);
+    }
+
     saveSettings("inactivity_followup", {
       text: inactivityFollowupMessage,
       enabled: inactivityFollowupEnabled,
       hours,
+      enabled_at: enabledAt,
     });
   };
 
@@ -1085,7 +1104,14 @@ export default function Settings() {
                   {isGrowth && (
                     <Switch
                       checked={inactivityFollowupEnabled}
-                      onCheckedChange={setInactivityFollowupEnabled}
+                      onCheckedChange={(checked) => {
+                        setInactivityFollowupEnabled(checked);
+                        if (checked) {
+                          setInactivityFollowupEnabledAt(new Date().toISOString());
+                        } else {
+                          setInactivityFollowupEnabledAt(null);
+                        }
+                      }}
                     />
                   )}
                 </div>

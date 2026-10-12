@@ -24,18 +24,22 @@ Deno.serve(async (req) => {
     // 1. Users that have the inactivity follow-up configured
     const { data: settingsRows, error: sErr } = await supabase
       .from("settings")
-      .select("user_id, value")
+      .select("user_id, value, updated_at")
       .eq("key", "inactivity_followup");
 
     if (sErr) throw sErr;
 
     for (const row of settingsRows || []) {
-      const cfg = (row.value || {}) as { enabled?: boolean; text?: string; hours?: number };
+      const cfg = (row.value || {}) as { enabled?: boolean; text?: string; hours?: number; enabled_at?: string };
       if (!cfg.enabled || !cfg.text?.trim()) continue;
       const hours = Number(cfg.hours);
       if (!Number.isFinite(hours) || hours <= 0) continue;
 
       const userId = row.user_id as string;
+      const cfgEnabledAt = cfg.enabled_at;
+      const enabledAtTime = cfgEnabledAt
+        ? new Date(String(cfgEnabledAt).replace(" ", "T")).getTime()
+        : (row.updated_at ? new Date(String(row.updated_at).replace(" ", "T")).getTime() : 0);
 
       // 2. Growth plan only
       const { data: profile } = await supabase
@@ -65,7 +69,8 @@ Deno.serve(async (req) => {
         .select("phone_number, direction, created_at, metadata")
         .eq("user_id", userId)
         .gte("created_at", windowStart)
-        .order("created_at", { ascending: true });
+        .order("created_at", { ascending: false }) // NEWEST FIRST
+        .limit(3000);
 
       if (!convs?.length) continue;
 
@@ -79,31 +84,51 @@ Deno.serve(async (req) => {
           entry = { phone: c.phone_number, lastInbound: null, followupAfter: false };
           perContact.set(key, entry);
         }
+
+        // Processing newest first:
         if (c.direction === "inbound") {
-          entry.lastInbound = c.created_at;
-          entry.followupAfter = false; // reset: customer replied after any follow-up
-          entry.phone = c.phone_number;
+          // The first inbound we see is the most recent one.
+          if (!entry.lastInbound) {
+            entry.lastInbound = c.created_at;
+            entry.phone = c.phone_number;
+          }
         } else if ((c.metadata as any)?.type === "inactivity_followup") {
-          entry.followupAfter = true;
+          // If we see a follow-up BEFORE we've seen an inbound (since we're going backwards in time),
+          // it means the follow-up was sent AFTER their last message.
+          if (!entry.lastInbound) {
+            entry.followupAfter = true;
+          }
         }
       }
 
-      // Orders placed by this business's customers
-      const { data: orders } = await supabase
-        .from("orders")
-        .select("customer_phone, whatsapp_phone")
-        .eq("user_id", userId);
-      const orderKeys = new Set<string>();
-      for (const o of orders || []) {
-        if (o.customer_phone) orderKeys.add(normalizeKey(o.customer_phone));
-        if (o.whatsapp_phone) orderKeys.add(normalizeKey(o.whatsapp_phone));
-      }
-
+      // Pre-filter eligible contacts before checking orders/takeovers to save DB queries
+      const eligibleEntries = [];
       for (const [key, entry] of perContact) {
         if (!entry.lastInbound) continue;
         if (entry.followupAfter) continue; // already followed up since their last message
         const lastInboundTime = new Date(entry.lastInbound.replace(" ", "T")).getTime();
         if (isNaN(lastInboundTime) || lastInboundTime > cutoffTime) continue; // not idle long enough
+        if (lastInboundTime < enabledAtTime) continue; // ignore backlog from before the feature was enabled
+        eligibleEntries.push({ key, entry });
+      }
+
+      if (!eligibleEntries.length) continue;
+
+      // Check if any eligible contacts have placed an order
+      const eligiblePhones = eligibleEntries.map(e => e.entry.phone);
+      const orderKeys = new Set<string>();
+
+      // Fetch in chunks of 100 to avoid huge URL strings
+      for (let i = 0; i < eligiblePhones.length; i += 100) {
+        const chunk = eligiblePhones.slice(i, i + 100);
+        const { data: oData1 } = await supabase.from("orders").select("customer_phone").eq("user_id", userId).in("customer_phone", chunk);
+        const { data: oData2 } = await supabase.from("orders").select("whatsapp_phone").eq("user_id", userId).in("whatsapp_phone", chunk);
+
+        for (const o of oData1 || []) if (o.customer_phone) orderKeys.add(normalizeKey(o.customer_phone));
+        for (const o of oData2 || []) if (o.whatsapp_phone) orderKeys.add(normalizeKey(o.whatsapp_phone));
+      }
+
+      for (const { key, entry } of eligibleEntries) {
         if (orderKeys.has(key)) continue; // customer already ordered — never send
 
         // Skip if the chat has been taken over by a human

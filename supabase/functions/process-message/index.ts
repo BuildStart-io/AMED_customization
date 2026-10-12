@@ -662,8 +662,13 @@ async function maybeNotifyQualifiedLead(
       .eq("user_id", userId)
       .maybeSingle();
 
-    const ownerPhone = notifSettings?.value?.phone;
+    let ownerPhone = notifSettings?.value?.phone ? String(notifSettings.value.phone).replace(/\D/g, "") : null;
     if (!ownerPhone) return;
+    if (ownerPhone.startsWith("0") && ownerPhone.length === 10) {
+      ownerPhone = "94" + ownerPhone.substring(1);
+    } else if (ownerPhone.length === 9) {
+      ownerPhone = "94" + ownerPhone;
+    }
 
     const { data: lastMsgs } = await supabase
       .from("conversations")
