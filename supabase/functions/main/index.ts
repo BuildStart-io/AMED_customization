@@ -13,9 +13,24 @@ serve(async (req: Request) => {
     return new Response("BuildStart.io edge-runtime router OK", { status: 200 });
   }
 
+  // Resolve function path (supporting _AMED suffix)
+  let resolvedFunction = functionName;
+  try {
+    Deno.statSync(`/home/deno/functions/${resolvedFunction}`);
+  } catch {
+    if (!resolvedFunction.endsWith("_AMED")) {
+      try {
+        Deno.statSync(`/home/deno/functions/${resolvedFunction}_AMED`);
+        resolvedFunction = `${resolvedFunction}_AMED`;
+      } catch {
+        // Fall back to original
+      }
+    }
+  }
+
   try {
     const worker = await EdgeRuntime.userWorkers.create({
-      servicePath: `/home/deno/functions/${functionName}`,
+      servicePath: `/home/deno/functions/${resolvedFunction}`,
       memoryLimitMb: 256,
       workerTimeoutMs: 5 * 60 * 1000,
       cpuTimeSoftLimitMs: 5 * 60 * 1000,
