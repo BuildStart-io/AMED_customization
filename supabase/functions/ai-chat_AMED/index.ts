@@ -1,5 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { handleDoctorFlow } from "./doctor.ts";
+import { handleNurseFlow } from "./nurse.ts";
+import { handleStudentFlow } from "./student.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -27,20 +30,59 @@ serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, { db: { schema: "AMED" } });
 
     const { message, phoneNumber, conversationHistory, userId, sessionApiKey, senderName } = await req.json();
 
     console.log(`Processing AI chat for ${phoneNumber} (user: ${userId}): ${message}`);
 
-    // Fetch products, FAQs, settings, profile, and platform limits
-    const [productsRes, faqsRes, settingsRes, profileRes, platformLimitsRes] = await Promise.all([
+    // Fetch products, FAQs, settings, profile, platform limits, and existing lead/call memory
+    const [productsRes, faqsRes, settingsRes, profileRes, platformLimitsRes, leadRes, callRes] = await Promise.all([
       supabase.from("products").select("*").eq("is_active", true).eq("user_id", userId),
       supabase.from("faqs").select("*, products(name)").eq("is_active", true).eq("user_id", userId),
       supabase.from("settings").select("key, value").eq("user_id", userId),
       supabase.from("profiles").select("plan_tier, billing_cycle_start, is_paused, addon_contacts, addon_orders").eq("user_id", userId).single(),
       supabase.from("platform_settings").select("value").eq("key", "plan_limits").single(),
+      supabase.from("leads").select("*").eq("user_id", userId).eq("phone_number", phoneNumber).maybeSingle(),
+      supabase.from("scheduled_calls").select("*").eq("user_id", userId).eq("contact_number", phoneNumber).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
+
+    let existingLead = leadRes.data || null;
+    const existingCall = callRes.data || null;
+
+    let currentProfession = existingLead?.profession || null;
+
+    // Check if customer provides their profession in the current message
+    if (!currentProfession && message) {
+      const lower = message.toLowerCase();
+      if (/\b(doctor|dr\.?|physician|surgeon|consultant)\b/i.test(lower)) {
+        currentProfession = "Doctor";
+      } else if (/\b(nurse|nursing|sister|matron)\b/i.test(lower)) {
+        currentProfession = "Nurse";
+      } else if (/\b(medical student|med student|mbbs student|student)\b/i.test(lower)) {
+        currentProfession = "Medical Student";
+      }
+
+      if (currentProfession) {
+        console.log(`[Triage] Profession detected in message for ${phoneNumber}: ${currentProfession}`);
+        if (!existingLead) {
+          existingLead = { user_id: userId, phone_number: phoneNumber, profession: currentProfession };
+        } else {
+          existingLead.profession = currentProfession;
+        }
+
+        // Save immediately to database so subsequent calls and session maintain state
+        await supabase
+          .from("leads")
+          .upsert({
+            user_id: userId,
+            phone_number: phoneNumber,
+            profession: currentProfession,
+            status: "Customer Details Pending",
+            updated_at: new Date().toISOString(),
+          }, { onConflict: "user_id,phone_number" });
+      }
+    }
 
     // Check if account is paused
     if (profileRes.data?.is_paused) {
@@ -179,11 +221,60 @@ serve(async (req) => {
       .map(msg => `${msg.direction === "inbound" ? "Customer" : "Assistant"}: ${msg.message}`)
       .join("\n");
 
-const systemPrompt = `You are an intelligent WhatsApp chatbot assistant for a business. You help customers with:
-1. Product inquiries
-2. Answering FAQs
-3. Taking orders
-4. Providing payment information
+    const leadStateSummary = existingLead ? `
+CURRENT CUSTOMER PROFILE (ALREADY COLLECTED - NEVER RE-ASK ANY OF THESE):
+- Customer Name: ${existingLead.customer_name || "Not provided yet"}
+- Profession: ${existingLead.profession || "Not provided yet"}
+${existingLead.profession === "Doctor" ? `- Medical Specialty: ${existingLead.specialty || "Not provided yet"}
+- Hospital/Clinic: ${existingLead.hospital_clinic || "Not provided yet"}
+- Designation: ${existingLead.designation || "Not provided yet"}` : ""}
+${existingLead.profession === "Nurse" ? `- Hospital/Institution: ${existingLead.hospital_clinic || "Not provided yet"}
+- Ward/Department: ${existingLead.ward_department || "Not provided yet"}
+- Designation: ${existingLead.designation || "Not provided yet"}` : ""}
+${existingLead.profession === "Medical Student" ? `- University/Institution: ${existingLead.institution || "Not provided yet"}
+- Course/Programme: ${existingLead.course_program || "Not provided yet"}
+- Current Year: ${existingLead.current_year || "Not provided yet"}` : ""}
+- City/District: ${existingLead.city_district || "Not provided yet"}
+- WhatsApp Number: ${existingLead.whatsapp_number || phoneNumber}
+- Normal Contact Number: ${existingLead.normal_contact_number || "Not provided yet"}
+- Current Status: ${existingLead.status || "New Lead"}
+${existingCall ? `- Scheduled Call: ${existingCall.call_date} at ${existingCall.call_time} (${existingCall.call_type || "Normal Call"})` : ""}
+` : `CURRENT CUSTOMER PROFILE:
+New lead. No details collected yet.`;
+
+    const WELCOME_TRIAGE_PROMPT = `
+STEP 1: Welcome & Profession Triage
+- Greet the customer warmly and introduce A-MED SOLUTIONS (trusted supplier of medical equipment and healthcare solutions across Sri Lanka, operating since 2009).
+- Ask for:
+  1. Customer Name
+  2. Profession (present the 3 options: Doctor, Nurse, or Medical Student).
+
+HARD GATE:
+Do NOT provide detailed product specifications, catalog lists, or prices until the customer identifies their profession (Doctor, Nurse, or Medical Student) and completes their required profile details.
+
+When the customer provides their name or profession, append at the END of your message:
+<LEAD_DETAILS_JSON>{"customer_name":"...","profession":"Doctor|Nurse|Medical Student","status":"Customer Details Pending"}</LEAD_DETAILS_JSON>
+`;
+
+    const flowPayload = { existingLead, existingCall, phoneNumber, userId };
+    let flowPrompt = "";
+
+    if (currentProfession === "Doctor") {
+      flowPrompt = handleDoctorFlow(flowPayload);
+    } else if (currentProfession === "Nurse") {
+      flowPrompt = handleNurseFlow(flowPayload);
+    } else if (currentProfession === "Medical Student") {
+      flowPrompt = handleStudentFlow(flowPayload);
+    } else {
+      flowPrompt = WELCOME_TRIAGE_PROMPT;
+    }
+
+    const systemPrompt = `You are the official WhatsApp Sales Support Agent for A-MED SOLUTIONS (trusted supplier of medical equipment and healthcare solutions across Sri Lanka, operating since 2009).
+Staff Support Hotlines: 0777 290390 | 0707 290390
+
+${leadStateSummary}
+
+${flowPrompt}
 
 IMPORTANT GUIDELINES:
 - Respond in the SAME LANGUAGE the customer uses. Auto-detect their language.
@@ -300,7 +391,7 @@ CRITICAL SECURITY RULE:
     const aiGenerateUrl = Deno.env.get("AI_GENERATE_URL");
     const botApiKey = Deno.env.get("BOT_API_KEY");
     const MODEL = "google/gemini-3-flash-preview";
-    const MAX_TOKENS = 500;
+    const MAX_TOKENS = 800;
 
     let aiResponse: Response;
     if (aiGenerateUrl && botApiKey) {
@@ -486,6 +577,156 @@ CRITICAL SECURITY RULE:
       }
     }
 
+    // Process LEAD_DETAILS_JSON to save/update profession-based customer fields
+    const leadDetailsMatch = responseText.match(/<LEAD_DETAILS_JSON>([\s\S]*?)<\/LEAD_DETAILS_JSON>/);
+    if (leadDetailsMatch) {
+      try {
+        const leadData = JSON.parse(leadDetailsMatch[1]);
+        console.log("Saving lead details to database:", JSON.stringify(leadData));
+        const leadPayload: Record<string, any> = {
+          user_id: userId,
+          phone_number: phoneNumber,
+          updated_at: new Date().toISOString(),
+        };
+        if (leadData.customer_name) leadPayload.customer_name = leadData.customer_name;
+        if (leadData.profession) leadPayload.profession = leadData.profession;
+        if (leadData.specialty) leadPayload.specialty = leadData.specialty;
+        if (leadData.hospital_clinic) leadPayload.hospital_clinic = leadData.hospital_clinic;
+        if (leadData.ward_department) leadPayload.ward_department = leadData.ward_department;
+        if (leadData.designation) leadPayload.designation = leadData.designation;
+        if (leadData.institution) leadPayload.institution = leadData.institution;
+        if (leadData.course_program) leadPayload.course_program = leadData.course_program;
+        if (leadData.current_year) leadPayload.current_year = leadData.current_year;
+        if (leadData.city_district) leadPayload.city_district = leadData.city_district;
+        if (leadData.whatsapp_number) leadPayload.whatsapp_number = leadData.whatsapp_number;
+        if (leadData.normal_contact_number) leadPayload.normal_contact_number = leadData.normal_contact_number;
+        if (leadData.status) leadPayload.status = leadData.status;
+
+        const { error: leadErr } = await supabase
+          .from("leads")
+          .upsert(leadPayload, { onConflict: "user_id,phone_number" });
+        if (leadErr) console.error("Error upserting lead:", leadErr);
+      } catch (parseErr) {
+        console.error("Error parsing LEAD_DETAILS_JSON:", parseErr);
+      }
+    }
+
+    // Process SPECIAL_IMPORT_JSON
+    const specialImportMatch = responseText.match(/<SPECIAL_IMPORT_JSON>([\s\S]*?)<\/SPECIAL_IMPORT_JSON>/);
+    if (specialImportMatch) {
+      try {
+        const importData = JSON.parse(specialImportMatch[1]);
+        console.log("Saving special import request:", JSON.stringify(importData));
+        const { data: curLead } = await supabase
+          .from("leads")
+          .select("id, customer_name")
+          .eq("user_id", userId)
+          .eq("phone_number", phoneNumber)
+          .maybeSingle();
+
+        const { error: importErr } = await supabase
+          .from("special_import_requests")
+          .insert({
+            user_id: userId,
+            lead_id: curLead?.id || null,
+            customer_name: importData.customer_name || curLead?.customer_name || senderName || "Customer",
+            customer_phone: phoneNumber,
+            product_name: importData.product_name || "Special Import Item",
+            brand_model: importData.brand_model || null,
+            required_specifications: importData.required_specifications || null,
+            required_quantity: String(importData.required_quantity || "1"),
+            required_date: importData.required_date || null,
+            additional_notes: importData.additional_notes || null,
+            status: "New Import Request",
+          });
+        if (importErr) console.error("Error creating special import request:", importErr);
+
+        await supabase
+          .from("leads")
+          .update({ status: "Special Import Request", updated_at: new Date().toISOString() })
+          .eq("user_id", userId)
+          .eq("phone_number", phoneNumber);
+      } catch (parseErr) {
+        console.error("Error parsing SPECIAL_IMPORT_JSON:", parseErr);
+      }
+    }
+
+    // Process SCHEDULE_CALL_JSON
+    const scheduleCallMatch = responseText.match(/<SCHEDULE_CALL_JSON>([\s\S]*?)<\/SCHEDULE_CALL_JSON>/);
+    if (scheduleCallMatch) {
+      try {
+        const callData = JSON.parse(scheduleCallMatch[1]);
+        console.log("Saving scheduled call:", JSON.stringify(callData));
+        const { data: curLead } = await supabase
+          .from("leads")
+          .select("id, customer_name")
+          .eq("user_id", userId)
+          .eq("phone_number", phoneNumber)
+          .maybeSingle();
+
+        const { error: callErr } = await supabase
+          .from("scheduled_calls")
+          .insert({
+            user_id: userId,
+            lead_id: curLead?.id || null,
+            customer_name: curLead?.customer_name || senderName || "Customer",
+            contact_number: callData.contact_number || phoneNumber,
+            call_date: callData.call_date || null,
+            call_time: callData.call_time || null,
+            call_type: callData.call_type || "Normal Call",
+            discussion_topic: callData.discussion_topic || null,
+            status: "Call Scheduled",
+          });
+        if (callErr) console.error("Error creating scheduled call:", callErr);
+
+        await supabase
+          .from("leads")
+          .update({ status: "Call Scheduled", updated_at: new Date().toISOString() })
+          .eq("user_id", userId)
+          .eq("phone_number", phoneNumber);
+      } catch (parseErr) {
+        console.error("Error parsing SCHEDULE_CALL_JSON:", parseErr);
+      }
+    }
+
+    // Process HANDOFF_REQUIRED / Pause Bot
+    const handoffMatch = responseText.match(/<HANDOFF_REQUIRED>([\s\S]*?)<\/HANDOFF_REQUIRED>/);
+    if (handoffMatch) {
+      try {
+        const handoffData = JSON.parse(handoffMatch[1] || "{}");
+        console.log(`[Human Handoff Triggered] for ${phoneNumber}:`, handoffData);
+
+        // Pause automated bot responses for this lead
+        const { error: takeoverErr } = await supabase
+          .from("chat_takeovers")
+          .upsert({
+            user_id: userId,
+            phone_number: phoneNumber,
+            is_taken_over: true,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: "user_id,phone_number" });
+        if (takeoverErr) console.error("Error updating chat_takeovers:", takeoverErr);
+
+        // Update lead status if still early in funnel
+        const { data: curLead } = await supabase
+          .from("leads")
+          .select("status")
+          .eq("user_id", userId)
+          .eq("phone_number", phoneNumber)
+          .maybeSingle();
+
+        if (curLead && ["New Lead", "Customer Details Pending", "Product Inquiry"].includes(curLead.status)) {
+          await supabase
+            .from("leads")
+            .update({ status: "Manual Follow-Up", updated_at: new Date().toISOString() })
+            .eq("user_id", userId)
+            .eq("phone_number", phoneNumber);
+        }
+      } catch (parseErr) {
+        console.error("Error handling HANDOFF_REQUIRED:", parseErr);
+      }
+    }
+
     // Resolve FAQ attachments: only for FAQs the AI actually used, first time per conversation,
     // max 4 attachments in one reply.
     let faqMedia: string[] = [];
@@ -536,11 +777,19 @@ CRITICAL SECURITY RULE:
     let cleanResponse = responseText;
     // Remove complete tagged blocks WITH their content first
     cleanResponse = cleanResponse.replace(/<ORDER_JSON>[\s\S]*?<\/ORDER_JSON>/g, "");
+    cleanResponse = cleanResponse.replace(/<LEAD_DETAILS_JSON>[\s\S]*?<\/LEAD_DETAILS_JSON>/g, "");
+    cleanResponse = cleanResponse.replace(/<SPECIAL_IMPORT_JSON>[\s\S]*?<\/SPECIAL_IMPORT_JSON>/g, "");
+    cleanResponse = cleanResponse.replace(/<SCHEDULE_CALL_JSON>[\s\S]*?<\/SCHEDULE_CALL_JSON>/g, "");
+    cleanResponse = cleanResponse.replace(/<HANDOFF_REQUIRED>[\s\S]*?<\/HANDOFF_REQUIRED>/g, "");
     cleanResponse = cleanResponse.replace(/<IMAGE_URL>[\s\S]*?<\/IMAGE_URL>/g, "");
     cleanResponse = cleanResponse.replace(/<VIDEO_URL>[\s\S]*?<\/VIDEO_URL>/g, "");
     cleanResponse = cleanResponse.replace(/<USED_FAQS>[\s\S]*?<\/USED_FAQS>/g, "");
     // Remove truncated/incomplete tags and everything after them
     cleanResponse = cleanResponse.replace(/<ORDER_JSON>[\s\S]*/g, "");
+    cleanResponse = cleanResponse.replace(/<LEAD_DETAILS_JSON>[\s\S]*/g, "");
+    cleanResponse = cleanResponse.replace(/<SPECIAL_IMPORT_JSON>[\s\S]*/g, "");
+    cleanResponse = cleanResponse.replace(/<SCHEDULE_CALL_JSON>[\s\S]*/g, "");
+    cleanResponse = cleanResponse.replace(/<HANDOFF_REQUIRED>[\s\S]*/g, "");
     cleanResponse = cleanResponse.replace(/<IMAGE_URL>[\s\S]*/g, "");
     cleanResponse = cleanResponse.replace(/<VIDEO_URL>[\s\S]*/g, "");
     cleanResponse = cleanResponse.replace(/<USED_FAQS>[\s\S]*/g, "");
