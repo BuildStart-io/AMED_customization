@@ -6,14 +6,8 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
-export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.15"
-  }
-  public: {
-    Tables: {
+type PublicSchema = {
+  Tables: {
       ai_usage_logs: {
         Row: {
           created_at: string
@@ -655,19 +649,26 @@ export type Database = {
         Returns: boolean
       }
     }
-    Enums: {
-      app_role: "super_admin" | "business_user"
-      plan_tier: "free" | "pro" | "enterprise"
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
+  Enums: {
+    app_role: "super_admin" | "business_user"
+    plan_tier: "free" | "pro" | "enterprise"
   }
+  CompositeTypes: {
+    [_ in never]: never
+  }
+}
+
+export type Database = {
+  __InternalSupabase: {
+    PostgrestVersion: "14.15"
+  }
+  public: PublicSchema
+  AMED: PublicSchema
 }
 
 type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
 
-type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "AMED">]
 
 export type Tables<
   DefaultSchemaTableNameOrOptions extends
