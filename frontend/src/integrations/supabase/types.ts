@@ -663,12 +663,12 @@ export type Database = {
     PostgrestVersion: "14.15"
   }
   public: PublicSchema
-  AMED: PublicSchema
+  amed_customization: PublicSchema
 }
 
 type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
 
-type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "AMED">]
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "amed_customization">]
 
 export type Tables<
   DefaultSchemaTableNameOrOptions extends
