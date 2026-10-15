@@ -16,6 +16,7 @@ import WelcomeMediaUpload from "@/components/settings/WelcomeMediaUpload";
 import StaffManager from "@/components/settings/StaffManager";
 import { useStaffAccess } from "@/hooks/useStaffAccess";
 import { useEffectivePlan } from "@/hooks/useEffectivePlan";
+import { safeUUID } from "@/lib/utils";
 
 interface PaymentAccount {
   account_type: string;
@@ -137,13 +138,13 @@ export default function Settings() {
             if (wVal?.welcome_sequence && Array.isArray(wVal.welcome_sequence)) {
               loadedSequence = wVal.welcome_sequence.map((seqItem: any) => {
                 if (seqItem.type === "text") {
-                  return { ...seqItem, text: seqItem.text ?? wVal?.text ?? "", id: seqItem.id || crypto.randomUUID() };
+                  return { ...seqItem, text: seqItem.text ?? wVal?.text ?? "", id: seqItem.id || safeUUID() };
                 }
                 return seqItem;
               });
             } else {
               // Build default sequence: text first, then media
-              if (wVal?.text?.trim()) loadedSequence.push({ type: "text", text: wVal.text, id: crypto.randomUUID() });
+              if (wVal?.text?.trim()) loadedSequence.push({ type: "text", text: wVal.text, id: safeUUID() });
               urls.forEach((u: string) => loadedSequence.push({ type: "media", url: u }));
             }
             setWelcomeSequence(loadedSequence);
@@ -882,7 +883,7 @@ export default function Settings() {
                         type="button" 
                         variant="outline" 
                         size="sm" 
-                        onClick={() => setWelcomeSequence(prev => [...prev, { type: "text", text: "", id: crypto.randomUUID() }])}
+                        onClick={() => setWelcomeSequence(prev => [...prev, { type: "text", text: "", id: safeUUID() }])}
                       >
                         <Plus className="h-4 w-4 mr-2" /> Add Message
                       </Button>
