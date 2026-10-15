@@ -805,8 +805,8 @@ CRITICAL SECURITY RULE:
     cleanResponse = cleanResponse.replace(/\{[^{}]*"total_amount"[^}]*\}/g, "");
     // Remove any remaining JSON-like structures with 2+ key-value pairs
     cleanResponse = cleanResponse.replace(/\{\s*"[^"]+"\s*:[\s\S]*?\}/g, "");
-    // Remove any leftover image URLs on their own line (https://...supabase... patterns)
-    cleanResponse = cleanResponse.replace(/^https?:\/\/[^\s]+$/gm, "");
+    // Remove any leftover image/video URLs on their own line (e.g. leaked from IMAGE_URL or supabase storage)
+    cleanResponse = cleanResponse.replace(/^https?:\/\/[^\s]+(?:\.(?:png|jpg|jpeg|webp|gif|mp4|mov|avi|webm)|\/storage\/v1\/object\/public\/[^\s]+)(?:\?[^\s]*)?$/gmi, "");
     // Remove standalone UUIDs that leak from FAQ IDs or correlation IDs
     cleanResponse = cleanResponse.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "");
     // Remove [FAQ_ID:...] references that may leak into response

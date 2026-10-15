@@ -22,6 +22,7 @@ import {
   Trash2,
   Crosshair,
   Mic,
+  MapPin,
 } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
@@ -350,15 +351,37 @@ export default function Conversations() {
         throw new Error(errData.error || "Failed to send message");
       }
 
+      const outboundText = replyText;
+      setReplyText("");
+
+      // Optimistic update so message shows immediately on screen
+      const optimisticMsg: Message = {
+        id: crypto.randomUUID(),
+        phone_number: selectedPhone,
+        message: outboundText,
+        direction: "outbound",
+        message_type: "text",
+        metadata: null,
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, optimisticMsg]);
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.phone_number === selectedPhone
+            ? { ...t, last_message: outboundText, last_time: new Date().toISOString() }
+            : t
+        )
+      );
+      setTimeout(scrollToBottom, 50);
+
       await supabase.from("conversations").insert({
         phone_number: selectedPhone,
-        message: replyText,
+        message: outboundText,
         direction: "outbound",
         message_type: "text",
         user_id: ownerId,
       });
 
-      setReplyText("");
       toast({ title: "Message sent" });
     } catch (error: any) {
       toast({
@@ -372,8 +395,19 @@ export default function Conversations() {
   };
 
   const formatWhatsAppText = (text: string) => {
-    return text
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    if (!text) return "";
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Convert URLs into clickable links with styled underline
+    const withLinks = escaped.replace(
+      /(https?:\/\/[^\s<]+)/g,
+      '<a href="$1" target="_blank" rel="noopener noreferrer" class="underline underline-offset-2 break-all hover:opacity-80 font-medium">$1</a>'
+    );
+
+    return withLinks
       .replace(/\*(.+?)\*/g, '<strong>$1</strong>')
       .replace(/_(.+?)_/g, '<em>$1</em>')
       .replace(/~(.+?)~/g, '<del>$1</del>');
@@ -632,6 +666,14 @@ export default function Conversations() {
                               <div className="flex items-center gap-1.5 opacity-80">
                                 <Mic className="h-4 w-4" />
                                 <span className="italic">Voice message</span>
+                              </div>
+                            ) : msg.message_type === "location" ? (
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1.5 font-medium text-xs opacity-90">
+                                  <MapPin className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                                  <span>Location Shared</span>
+                                </div>
+                                <p className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: formatWhatsAppText(msg.message || "Shared Location") }} />
                               </div>
                             ) : (
                               <p className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: formatWhatsAppText(msg.message) }} />

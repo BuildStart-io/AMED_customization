@@ -19,4 +19,4 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_REGION: ${MINIO_REGION}
       FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON:-}
-      WEBHOOK_URL_OVERRIDE: "https://vast-publishers-sentences-supreme.trycloudflare.com/functions/v1/webhook-wsender_AMED"
+      WEBHOOK_URL_OVERRIDE: "https://cardiff-wings-wow-hung.trycloudflare.com/functions/v1/webhook-wsender"

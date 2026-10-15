@@ -115,7 +115,7 @@ serve(async (req) => {
 
 
     // Text body — WAHA usually puts it on payload.body
-    const messageText = wp.body
+    let messageText = wp.body
       || wp._data?.message?.conversation
       || wp._data?.message?.extendedTextMessage?.text
       || "";
@@ -130,8 +130,25 @@ serve(async (req) => {
     else if (wMsg.audioMessage) messageType = wMsg.audioMessage?.ptt ? "ptt" : "audio";
     else if (wMsg.documentMessage) messageType = "document";
     else if (wMsg.stickerMessage) messageType = "sticker";
-    else if (wMsg.locationMessage) messageType = "location";
+    else if (wMsg.locationMessage || wp.location) messageType = "location";
     else if (wp.hasMedia && !messageText && messageType === "text") messageType = "image";
+
+    // If it's a location message, construct a Google Maps URL so it displays and routes properly
+    if (messageType === "location" || wMsg.locationMessage || wp.location) {
+      messageType = "location";
+      const loc = wp.location || wMsg.locationMessage || {};
+      const lat = loc.latitude ?? loc.degreesLatitude;
+      const lng = loc.longitude ?? loc.degreesLongitude;
+      const locName = loc.name || loc.description || loc.address || "";
+      if (lat != null && lng != null) {
+        const mapsUrl = `https://maps.google.com/?q=${lat},${lng}`;
+        messageText = locName ? `📍 ${locName}\n${mapsUrl}` : `📍 ${mapsUrl}`;
+      } else if (loc.url) {
+        messageText = `📍 ${locName ? `${locName}\n` : ""}${loc.url}`;
+      } else if (!messageText) {
+        messageText = "📍 Shared Location";
+      }
+    }
 
     const senderName = wp._data?.pushName || wp._data?.notifyName || wp.notifyName || "Unknown";
     const wahaMessageId = wp.id || wp._data?.key?.id || `${phoneNumber}-${Date.now()}`;
