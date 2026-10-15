@@ -1,4 +1,4 @@
-INSERT INTO "AMED".products (
+INSERT INTO "amed_customization".products (
   user_id,
   name,
   description,
