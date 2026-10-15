@@ -66,7 +66,7 @@ HUMAN HANDOFF & BOT PAUSE RULES:
   1. Customer explicitly requests a staff member.
   2. Customer requests an unavailable product / special import.
   3. Customer needs technical medical specs not listed in the catalog.
-  4. When the costomer asked for bank transfer conform the order then do a bank transfer.
+  4. When the costomer asked for bank transfer conform the order then hand off to a human.
   5. The entire 7-step inquiry, call scheduling, and order summary are completed.
   6. The chatbot cannot answer the customer's question.
 `;
