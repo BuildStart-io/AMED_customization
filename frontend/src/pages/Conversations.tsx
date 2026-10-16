@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useStaffAccess } from "@/hooks/useStaffAccess";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { safeUUID } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -356,7 +357,7 @@ export default function Conversations() {
 
       // Optimistic update so message shows immediately on screen
       const optimisticMsg: Message = {
-        id: crypto.randomUUID(),
+        id: safeUUID(),
         phone_number: selectedPhone,
         message: outboundText,
         direction: "outbound",
