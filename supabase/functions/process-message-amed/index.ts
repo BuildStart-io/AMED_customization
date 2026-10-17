@@ -299,11 +299,68 @@ async function processMessage(
     let replyText = "";
     if (analysis.isBankTransferReceipt) {
       if (isSinhala) {
-        replyText = "ස්තූතියි! ඔබගේ බැංකු ගෙවීම් රිසිට්පත ලැබී ඇත. 🧾 අපගේ කාර්ය මණ්ඩල සාමාජිකයෙකු කෙටි වේලාවකින් ගෙවීම තහවුරු කරනු ඇත.";
+        replyText = "ස්තූතියි! ඔබගේ ගෙවීම් රිසිට්පත ලැබී ඇති අතර ඔබගේ ඇණවුම තහවුරු කරන ලදී (තත්ත්වය: පොරොත්තු). 🧾 අපගේ කාර්ය මණ්ඩල සාමාජිකයෙකු කෙටි වේලාවකින් ගෙවීම තහවුරු කර ඇණවුම එවනු ඇත.";
       } else if (isTamil) {
-        replyText = "நன்றி! உங்கள் பணம் செலுத்திய ரசீது பெறப்பட்டது. 🧾 எங்கள் ஊழியர் விரைவில் கட்டணத்தைச் சரிபார்ப்பார்.";
+        replyText = "நன்றி! உங்கள் பணம் செலுத்திய ரசீது பெறப்பட்டது மற்றும் உங்கள் ஆர்டர் உறுதிப்படுத்தப்பட்டது (நிலை: நிலுவையில் உள்ளது). 🧾 எங்கள் ஊழியர் விரைவில் கட்டணத்தைச் சரிபார்த்து உங்கள் ஆர்டரை அனுப்புவார்.";
       } else {
-        replyText = "Thank you! We have received your payment receipt. 🧾 Our staff member will verify the payment shortly and proceed with your order.";
+        replyText = "Thank you! We have received your payment receipt and your order is confirmed (Status: Pending Verification). 🧾 Our staff member will verify the payment shortly and proceed with your order.";
+      }
+
+      // Confirm order in amed.orders and mark status as pending
+      const receiptNote = analysis.storageUrl ? `[Receipt: ${analysis.storageUrl}]` : "[Payment slip uploaded]";
+      const { data: existingOrders } = await supabase
+        .from("orders")
+        .select("id, status, special_instructions")
+        .eq("user_id", userId)
+        .or(`customer_phone.eq.${phoneNumber},whatsapp_phone.eq.${phoneNumber}`)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (existingOrders && existingOrders.length > 0) {
+        const existingOrder = existingOrders[0];
+        const currentNotes = existingOrder.special_instructions || "";
+        const updatedNotes = currentNotes.includes(receiptNote) ? currentNotes : `${currentNotes} ${receiptNote}`.trim();
+
+        await supabase
+          .from("orders")
+          .update({
+            status: "pending",
+            payment_method: "bank_transfer",
+            special_instructions: updatedNotes,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existingOrder.id);
+        console.log(`[${corrId}] Confirmed existing order ${existingOrder.id} and marked status as pending`);
+      } else {
+        const { data: leadData } = await supabase
+          .from("leads")
+          .select("customer_name")
+          .eq("user_id", userId)
+          .eq("phone_number", phoneNumber)
+          .maybeSingle();
+
+        const custName = leadData?.customer_name || senderName || "Customer";
+        const { data: newOrder, error: orderErr } = await supabase
+          .from("orders")
+          .insert({
+            user_id: userId,
+            customer_name: custName,
+            customer_phone: phoneNumber,
+            whatsapp_phone: phoneNumber,
+            payment_method: "bank_transfer",
+            status: "pending",
+            special_instructions: receiptNote,
+            order_items: [],
+            total_amount: 0,
+          })
+          .select("id")
+          .single();
+
+        if (orderErr) {
+          console.error(`[${corrId}] Error creating pending order for receipt:`, orderErr);
+        } else {
+          console.log(`[${corrId}] Created and confirmed new order ${newOrder?.id} marked as pending`);
+        }
       }
 
       // Update lead status to Payment Verification Pending
