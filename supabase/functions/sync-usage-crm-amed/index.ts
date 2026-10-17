@@ -20,7 +20,7 @@ serve(async (req) => {
     
     // We use the service role key to bypass RLS and read all customer usage
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      db: { schema: "amed_customization" },
+      db: { schema: "amed" },
     });
 
     console.log("Starting CRM usage sync...");

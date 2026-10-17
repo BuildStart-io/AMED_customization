@@ -24,6 +24,7 @@ import {
   Crosshair,
   Mic,
   MapPin,
+  Image as ImageIcon,
 } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
@@ -266,7 +267,7 @@ export default function Conversations() {
       .channel("conversations-realtime")
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "amed_customization", table: "conversations" },
+        { event: "INSERT", schema: "amed", table: "conversations" },
         (payload) => {
           const newMsg = payload.new as Message;
 
@@ -675,6 +676,16 @@ export default function Conversations() {
                                   <span>Location Shared</span>
                                 </div>
                                 <p className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: formatWhatsAppText(msg.message || "Shared Location") }} />
+                              </div>
+                            ) : msg.message_type === "image" ? (
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1.5 font-medium text-xs opacity-90">
+                                  <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+                                  <span>Photo</span>
+                                </div>
+                                {msg.message && msg.message !== "📷 [Photo]" && (
+                                  <p className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: formatWhatsAppText(msg.message) }} />
+                                )}
                               </div>
                             ) : (
                               <p className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: formatWhatsAppText(msg.message) }} />

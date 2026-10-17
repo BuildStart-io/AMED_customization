@@ -11,13 +11,13 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   );
 }
 
-export const supabase = createClient<Database, "amed_customization">(SUPABASE_URL, SUPABASE_ANON_KEY, {
+export const supabase = createClient<Database, "amed">(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     storage: localStorage,
     persistSession: true,
     autoRefreshToken: true,
   },
   db: {
-    schema: "amed_customization",
+    schema: "amed",
   },
 });

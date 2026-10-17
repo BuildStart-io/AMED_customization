@@ -14,7 +14,7 @@ serve(async (req) => {
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey, { db: { schema: "amed_customization" } });
+  const supabase = createClient(supabaseUrl, supabaseServiceKey, { db: { schema: "amed" } });
 
   let triggerSource = "cron";
   let triggerCorrelationId = "";
@@ -156,17 +156,29 @@ async function processMessage(
     isVoice = true;
   }
 
-  // Check if this is a media message — if so, store it but do NOT reply
-  const mediaTypes = ["image", "video", "document", "sticker", "vcard", "location"];
-  let isMediaMessage = mediaTypes.includes(messageType) || 
-    (!messageText && messageType !== "text" && !isVoice) ||
-    (body?.data?.messages?.messageBody === undefined && body?.data?.messages?.message?.conversation === undefined && !isVoice && !messageText);
+  // Only skip replying to unsupported non-text media types (stickers, vcards)
+  // Images and documents (e.g. payment slips/receipts) must be processed and replied to!
+  const skipReplyMediaTypes = ["sticker", "vcard"];
+  let isMediaMessage = skipReplyMediaTypes.includes(messageType) || 
+    (!messageText && !isVoice && messageType !== "image" && messageType !== "document" && messageType !== "text");
+
+  // Determine display text for storing in conversations so it's descriptive and never empty
+  let displayMessage = messageText;
+  if (isVoice) {
+    displayMessage = "🎤 [Voice Note: Transcribing...]";
+  } else if (!displayMessage) {
+    if (messageType === "image") displayMessage = "📷 [Photo]";
+    else if (messageType === "document") displayMessage = "📄 [Document]";
+    else if (messageType === "video") displayMessage = "🎥 [Video]";
+    else if (messageType === "location") displayMessage = "📍 [Location]";
+    else displayMessage = `[${messageType || "Media"}]`;
+  }
 
   // 1. Store the incoming message in conversations
   mark("store_inbound_start");
   const { data: inboundMsg, error: insertError } = await supabase.from("conversations").insert({
     phone_number: phoneNumber,
-    message: isVoice ? "🎤 [Voice Note: Transcribing...]" : messageText,
+    message: displayMessage,
     direction: "inbound",
     message_type: messageType,
     metadata: { senderName, event: body?.event, raw: body, correlationId: corrId, is_voice: isVoice },
@@ -224,7 +236,7 @@ async function processMessage(
   );
 
 
-  // Skip replying to media messages (images, PDFs, videos, etc.)
+  // Skip replying only to unhandled media messages (stickers, vcards)
   if (isMediaMessage) {
     console.log(`[${corrId}] Media message (type: ${messageType}) from ${phoneNumber}, stored but not replying`);
     return;
@@ -306,6 +318,7 @@ async function processMessage(
         conversationHistory: conversationHistory?.reverse() || [],
         userId,
         sessionApiKey,
+        messageType,
       }),
       signal: controller.signal,
     });

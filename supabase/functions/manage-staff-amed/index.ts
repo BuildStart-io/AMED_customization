@@ -16,7 +16,7 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      db: { schema: "amed_customization" },
+      db: { schema: "amed" },
     });
 
     // Verify caller
@@ -30,7 +30,7 @@ serve(async (req) => {
     const token = authHeader.replace("Bearer ", "");
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
-      db: { schema: "amed_customization" },
+      db: { schema: "amed" },
     });
     const { data: claimsData, error: claimsError } = await authClient.auth.getClaims(token);
     if (claimsError || !claimsData?.claims?.sub) {

@@ -19,4 +19,31 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_REGION: ${MINIO_REGION}
       FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON:-}
-      WEBHOOK_URL_OVERRIDE: "http://supabase-envoy:8000/functions/v1/webhook-wsender"
+      WEBHOOK_URL_OVERRIDE: ${WEBHOOK_URL_OVERRIDE:-http://api-gw:8000/functions/v1/webhook-wsender-amed}
+
+  waha:
+    container_name: waha
+    image: devlikeapro/waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      WHATSAPP_API_KEY: ${WAHA_API_KEY}
+      WHATSAPP_DEFAULT_ENGINE: WEBJS
+
+  minio:
+    container_name: supabase-minio
+    image: elestio/minio:latest
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    command: server /data --console-address :9001
+    volumes:
+      - minio-data:/data
+
+volumes:
+  minio-data:

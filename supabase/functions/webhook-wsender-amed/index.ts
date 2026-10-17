@@ -27,7 +27,7 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey, { db: { schema: "amed_customization" } });
+  const supabase = createClient(supabaseUrl, supabaseServiceKey, { db: { schema: "amed" } });
 
   const correlationId = crypto.randomUUID();
 
@@ -55,7 +55,24 @@ serve(async (req) => {
       .limit(1)
       .maybeSingle();
 
-    const userId = sessionMapping?.user_id || null;
+    let userId = sessionMapping?.user_id || null;
+    if (!userId && sessionName.startsWith("u_")) {
+      const hexPrefix = sessionName.slice(2);
+      const { data: profs } = await supabase.from("profiles").select("user_id");
+      const matched = profs?.find((p: any) => p.user_id.replace(/-/g, "").startsWith(hexPrefix));
+      if (matched) {
+        userId = matched.user_id;
+        await supabase.from("user_wsender_sessions").upsert(
+          {
+            user_id: userId,
+            session_id: sessionName,
+            session_name: sessionName,
+            session_api_key: sessionName,
+          },
+          { onConflict: "user_id,session_id" }
+        );
+      }
+    }
 
     // Handle session.status events: just log + acknowledge.
     if (event === "session.status") {
@@ -114,17 +131,21 @@ serve(async (req) => {
     }
 
 
-    // Text body — WAHA usually puts it on payload.body
+    // Text body & captions — WAHA puts text/captions in various fields depending on engine
+    const wMsg = wp._data?.message || {};
     let messageText = wp.body
-      || wp._data?.message?.conversation
-      || wp._data?.message?.extendedTextMessage?.text
+      || wp.caption
+      || wMsg.imageMessage?.caption
+      || wMsg.videoMessage?.caption
+      || wMsg.documentMessage?.caption
+      || wMsg.conversation
+      || wMsg.extendedTextMessage?.text
       || "";
 
     // Message type — derive from WAHA `type` or `_data.message.*` keys
     let messageType = wp.type || "text";
     if (messageType === "chat") messageType = "text";
     
-    const wMsg = wp._data?.message || {};
     if (wMsg.imageMessage) messageType = "image";
     else if (wMsg.videoMessage) messageType = "video";
     else if (wMsg.audioMessage) messageType = wMsg.audioMessage?.ptt ? "ptt" : "audio";

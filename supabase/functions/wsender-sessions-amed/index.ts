@@ -119,7 +119,7 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      db: { schema: "amed_customization" },
+      db: { schema: "amed" },
     });
 
     // Identify the calling user from the JWT (token already verified by gateway = false; we self-check)
@@ -130,7 +130,7 @@ serve(async (req) => {
     }
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
-      db: { schema: "amed_customization" },
+      db: { schema: "amed" },
     });
     const { data: claimsData, error: claimsError } = await authClient.auth.getClaims(token);
     if (claimsError || !claimsData?.claims?.sub) {

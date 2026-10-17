@@ -30,9 +30,9 @@ serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey, { db: { schema: "amed_customization" } });
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, { db: { schema: "amed" } });
 
-    const { message, phoneNumber, conversationHistory, userId, sessionApiKey, senderName } = await req.json();
+    const { message, phoneNumber, conversationHistory, userId, sessionApiKey, senderName, messageType } = await req.json();
 
     console.log(`Processing AI chat for ${phoneNumber} (user: ${userId}): ${message}`);
 
@@ -381,8 +381,10 @@ CRITICAL SECURITY RULE:
 
     // Handle photo/media messages - users often send payment slips
     const trimmedMessage = (message || "").trim();
-    if (!trimmedMessage) {
-      messages.push({ role: "user", content: "[Customer sent a photo/media file (likely a bank receipt or payment slip). Acknowledge receipt politely, and tell the customer that a staff member will verify the payment and then proceed with the order. Do NOT output any raw JSON or code.]" });
+    if (messageType === "image" || messageType === "document" || !trimmedMessage || trimmedMessage === "📷 [Photo]" || trimmedMessage === "📄 [Document]") {
+      const hasCaption = trimmedMessage && trimmedMessage !== "📷 [Photo]" && trimmedMessage !== "📄 [Document]";
+      const captionInfo = hasCaption ? ` Customer added caption: "${trimmedMessage}".` : "";
+      messages.push({ role: "user", content: `[Customer sent a ${messageType === "document" ? "document/PDF" : "photo/media"} file (likely a bank receipt or payment slip).${captionInfo} Acknowledge receipt politely, and tell the customer that a staff member will verify the payment and then proceed with the order. Do NOT output any raw JSON or code.]` });
     } else {
       messages.push({ role: "user", content: trimmedMessage });
     }

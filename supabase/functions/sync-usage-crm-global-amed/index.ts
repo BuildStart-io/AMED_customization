@@ -17,7 +17,7 @@ serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      db: { schema: "amed_customization" },
+      db: { schema: "amed" },
     });
 
     console.log(`Starting GLOBAL CRM usage sync...`);
