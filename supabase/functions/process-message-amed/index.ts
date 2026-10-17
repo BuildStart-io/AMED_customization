@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { transcribeAudio } from "./transcribe.ts";
+import { analyzeImage } from "./imageAnalyzer.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -47,11 +48,20 @@ serve(async (req) => {
     // Only pick from users who don't have another message currently processing.
     // We use a two-step approach since Supabase JS doesn't support FOR UPDATE SKIP LOCKED.
     
-    // Find users currently processing
+    // Auto-heal any messages stuck in 'processing' for > 2 minutes
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    await supabase
+      .from("message_queue")
+      .update({ status: "failed", error_message: "Processing timed out", updated_at: new Date().toISOString() })
+      .eq("status", "processing")
+      .lt("updated_at", twoMinutesAgo);
+
+    // Find users currently processing (active within last 2 minutes)
     const { data: busyUsers } = await supabase
       .from("message_queue")
       .select("user_id")
-      .eq("status", "processing");
+      .eq("status", "processing")
+      .gte("updated_at", twoMinutesAgo);
 
     const busyUserIds = (busyUsers || []).map((u: any) => u.user_id);
 
@@ -234,6 +244,116 @@ async function processMessage(
   await maybeNotifyQualifiedLead(
     supabase, supabaseUrl, supabaseServiceKey, userId, phoneNumber, senderName, sessionApiKey, corrId
   );
+
+  // 1d. Handle incoming images: classify whether it's an order confirming bank transfer receipt or other image
+  if (messageType === "image") {
+    console.log(`[${corrId}] Detected image message, analyzing image...`);
+    const mediaUrl = body?.payload?.media?.url || body?.media?.url;
+    const analysis = await analyzeImage(supabase, sessionApiKey, wahaMessageId, mediaUrl, body, userId, phoneNumber, messageText);
+    console.log(`[${corrId}] Image analysis result: isBankReceipt=${analysis.isBankTransferReceipt}, reason=${analysis.reason}`);
+
+    // Update display message and metadata in conversations
+    if (inboundMsg?.id) {
+      await supabase.from("conversations").update({
+        message: analysis.isBankTransferReceipt ? "📷 [Bank Transfer Receipt]" : "📷 [Photo / Image]",
+        metadata: {
+          senderName,
+          event: body?.event,
+          raw: body,
+          correlationId: corrId,
+          image_analysis: analysis,
+          storage_url: analysis.storageUrl,
+        }
+      }).eq('id', inboundMsg.id);
+    }
+
+    // Check if chat was already taken over by a human staff member
+    const { data: takeoverData } = await supabase
+      .from("chat_takeovers")
+      .select("is_taken_over")
+      .eq("user_id", userId)
+      .eq("phone_number", phoneNumber)
+      .maybeSingle();
+    const isAlreadyTakenOver = takeoverData?.is_taken_over === true;
+
+    // If chat is already taken over by staff and this is not a bank receipt, let staff handle it
+    if (!analysis.isBankTransferReceipt && isAlreadyTakenOver) {
+      console.log(`[${corrId}] Non-receipt image received during human takeover, skipping bot response`);
+      return;
+    }
+
+    // Detect language from recent messages and current caption
+    const { data: recentConvos } = await supabase
+      .from("conversations")
+      .select("message")
+      .eq("phone_number", phoneNumber)
+      .eq("user_id", userId)
+      .eq("direction", "inbound")
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    const historyText = ((recentConvos || []).map((c: any) => c.message || "").join(" ") + " " + (messageText || "")).trim();
+    const isSinhala = /[\u0D80-\u0DFF]/.test(historyText);
+    const isTamil = /[\u0B80-\u0BFF]/.test(historyText);
+
+    let replyText = "";
+    if (analysis.isBankTransferReceipt) {
+      if (isSinhala) {
+        replyText = "ස්තූතියි! ඔබගේ බැංකු ගෙවීම් රිසිට්පත ලැබී ඇත. 🧾 අපගේ කාර්ය මණ්ඩල සාමාජිකයෙකු කෙටි වේලාවකින් ගෙවීම තහවුරු කරනු ඇත.";
+      } else if (isTamil) {
+        replyText = "நன்றி! உங்கள் பணம் செலுத்திய ரசீது பெறப்பட்டது. 🧾 எங்கள் ஊழியர் விரைவில் கட்டணத்தைச் சரிபார்ப்பார்.";
+      } else {
+        replyText = "Thank you! We have received your payment receipt. 🧾 Our staff member will verify the payment shortly and proceed with your order.";
+      }
+
+      // Update lead status to Payment Verification Pending
+      await supabase
+        .from("leads")
+        .upsert({
+          user_id: userId,
+          phone_number: phoneNumber,
+          status: "Payment Verification Pending",
+          updated_at: new Date().toISOString()
+        }, { onConflict: "user_id,phone_number" });
+
+      // Set chat takeover so staff can manually verify the payment
+      await supabase
+        .from("chat_takeovers")
+        .upsert({
+          user_id: userId,
+          phone_number: phoneNumber,
+          is_taken_over: true,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "user_id,phone_number" });
+
+    } else {
+      // For any other image: inform the customer that the bot cannot read/understand images
+      if (isSinhala) {
+        replyText = "මට පින්තූර කියවීමට හෝ තේරුම් ගැනීමට නොහැක. 📷 කරුණාකර ඔබගේ විස්තර හෝ විමසීම කෙටි පණිවිඩයක් (text) ලෙස එවන්න.";
+      } else if (isTamil) {
+        replyText = "என்னால் படங்களைப் படிக்கவோ புரிந்துகொள்ளவோ முடியாது. 📷 தயவுசெய்து உங்கள் செய்தியை உரையாக (text) அனுப்பவும்.";
+      } else {
+        replyText = "I can't read or understand images. 📷 Please send your message or inquiry as text, and I will be happy to help you!";
+      }
+    }
+
+    // Store reply in conversations
+    await supabase.from("conversations").insert({
+      phone_number: phoneNumber,
+      message: replyText,
+      direction: "outbound",
+      message_type: "text",
+      user_id: userId,
+      metadata: { correlationId: corrId, image_analysis: analysis },
+    });
+
+    // Send reply via WhatsApp
+    mark("send_start");
+    await sendWhatsApp(supabaseUrl, supabaseServiceKey, phoneNumber, replyText, null, sessionApiKey);
+    mark("send_end");
+
+    return;
+  }
 
 
   // Skip replying only to unhandled media messages (stickers, vcards)
@@ -436,7 +556,7 @@ async function handleWelcomeMessage(
 
   // Check bypass triggers
   const bypassTriggers: string[] = welcomeSettings?.value?.bypass_triggers || [];
-  const msgLower = messageText.toLowerCase();
+  const msgLower = (messageText || "").toLowerCase();
   const shouldBypass = bypassTriggers.length > 0 && bypassTriggers.some((t: string) => msgLower.includes(t));
 
   if (shouldBypass) {
